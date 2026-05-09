@@ -36,21 +36,126 @@ deployment with at most a URL/IP override.
 
 ## 安装
 
-需要 Linux/macOS 桌面（首次登录要 GUI 弹 Chrome）、Python 3.10+、Google Chrome。
+### 前置条件
+
+需要这些东西，没有的先装：
+
+| 要的东西 | 检查命令 | 没装的话 |
+|---|---|---|
+| **桌面 Linux 或 macOS** | `uname -a` | Windows 没测过，理论上能跑但首次登录的浏览器弹窗会有兼容性问题 |
+| **Python ≥ 3.10** | `python3 --version` | Ubuntu 22.04+/macOS 12+ 自带；旧系统升级 Python |
+| **python3-venv 模块**（Linux 限定） | `python3 -m venv --help` 不报错 | Ubuntu/Debian: `sudo apt install python3-venv` |
+| **Google Chrome** | `google-chrome --version` 或 `which google-chrome-stable` | https://www.google.com/chrome/ 直接装；本工具复用系统 Chrome，不另下载 |
+| **git** | `git --version` | Ubuntu: `sudo apt install git`；macOS: `xcode-select --install` |
+| **桌面图形会话** | `echo $DISPLAY` 非空 | 远程 ssh 无 X11 转发会卡在首次登录步骤；要在物理屏前/带桌面环境的机器上跑 |
+
+### 如果你不熟悉 Python 虚拟环境
+
+> Python 的 venv 就是给项目建一个**独立的 Python 包池**，
+> 装的依赖只在那个目录里生效，不污染系统 Python，不和别的项目打架。
+> 这个仓库需要 `playwright` 包，装到 venv 里最干净——
+> 卸的时候删除 `.venv` 目录就行，不留痕迹。
+>
+> 别的方案（pipx / uv / conda 等）也行，但下面这一套用 venv 是最简单、
+> 不用装额外工具的。
+
+### 安装步骤（保姆版）
+
+**第 1 步：clone 仓库到 Claude Code 的 skill 目录**
 
 ```bash
-# 1. clone 到 Claude Code 的 skills 目录
-git clone https://github.com/<your-github>/mycos-eval-skill.git \
+# 如果用 Claude Code，clone 到 skills 目录最方便（自动激活）
+git clone https://github.com/Neomelt/mycos-eval-skill.git \
     ~/.claude/skills/mycos-eval
 
-# 2. 装 Playwright（不下载额外 chromium，复用系统 Chrome）
 cd ~/.claude/skills/mycos-eval
+```
+
+> ⚠️ 仓库名是 `mycos-eval-skill`，但 clone 时**目录名要改成 `mycos-eval`**
+> （和 `SKILL.md` 里 `name: mycos-eval` 对齐，Claude Code 才认）。
+>
+> 如果你不用 Claude Code，可以 clone 到任意位置，例如：
+> `git clone https://github.com/Neomelt/mycos-eval-skill.git ~/code/mycos-eval-skill`
+
+**第 2 步：建虚拟环境**
+
+```bash
 python3 -m venv .venv
+```
+
+跑完目录里会多一个 `.venv/`。这是这个项目专用的 Python 沙箱，已经在
+`.gitignore` 里了，不会被 commit。
+
+**第 3 步：在虚拟环境里装依赖**
+
+```bash
 .venv/bin/pip install -r requirements.txt
 ```
 
-注意 skill 目录名建议用 `mycos-eval`（与 SKILL.md 的 `name` 字段一致），不要带
-`-skill` 后缀。
+只装一个 `playwright` 包，不到 30 秒。装完会出现 `playwright` 这个命令位于
+`.venv/bin/playwright`。
+
+**第 4 步：验证装好了**
+
+```bash
+.venv/bin/python eval.py --help
+```
+
+应当看到 `usage: eval.py [-h] [--resolver RESOLVER] {login,check,run} ...`
+之类的帮助。看到就 OK，可以直接跳到[使用](#使用)。
+
+> 注意：本工具**不下载**额外的 Chromium（很多 Playwright 教程会让你跑
+> `playwright install chromium`，那一步会下 130MB），而是复用你系统里
+> 已经装好的 Chrome。所以省掉了那一步。
+
+### 完整流水（一段贴板）
+
+```bash
+# Linux/macOS 通用，假设 git/python3/Chrome 都已就绪
+git clone https://github.com/Neomelt/mycos-eval-skill.git \
+    ~/.claude/skills/mycos-eval
+cd ~/.claude/skills/mycos-eval
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python eval.py --help    # 验证
+```
+
+### 常见安装报错
+
+<details>
+<summary><strong>The virtual environment was not created successfully because ensurepip is not available</strong></summary>
+
+Ubuntu/Debian 默认 Python 没带 venv 模块，跑：
+```bash
+sudo apt install python3-venv python3-pip
+```
+然后重试 `python3 -m venv .venv`。
+</details>
+
+<details>
+<summary><strong>error: externally-managed-environment</strong>（Ubuntu 24.04 等新系统）</summary>
+
+这是 PEP 668 限制系统 pip 的报错。**只要你已经在 venv 里**（用
+`.venv/bin/pip` 而不是裸的 `pip`）就不会触发。如果触发了，说明你跳过了
+venv 那一步，回去补上。
+</details>
+
+<details>
+<summary><strong>BrowserType.launch: Executable doesn't exist at .../chrome-linux/chrome</strong></summary>
+
+Playwright 在找它自己下载的 chromium 但没下载。本工具用的是系统 Chrome
+（`channel="chrome"`），不该走到这条路径。如果你看到这个报错，说明
+`google-chrome` 命令在 PATH 里找不到。`which google-chrome` 检查；
+没装就装一个。
+</details>
+
+<details>
+<summary><strong>首次运行 login 时 Chrome 弹不出来</strong></summary>
+
+- 检查 `echo $DISPLAY` 非空（必须有桌面会话）
+- 远程 ssh 用户：要么用 X11 转发（`ssh -X`）+本地 X server，要么换到物理屏前操作
+- macOS：第一次启动 Chrome 可能需要在 System Settings → Privacy 里允许
+</details>
 
 ## 使用
 
