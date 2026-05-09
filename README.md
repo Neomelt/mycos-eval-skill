@@ -54,20 +54,45 @@ python3 -m venv .venv
 
 ## 使用
 
-在 Claude Code 里直接说一句中文就触发：
+### Claude Code（最丝滑）
 
-```
-跑一下评教
-```
-```
-帮我做教学评价
-```
-```
-搞一下麦可思
-```
+clone 到 `~/.claude/skills/mycos-eval/`，Claude Code 会自动读 `SKILL.md` 注册
+skill。在会话里随便说一句："跑一下评教" / "帮我做教学评价" / "搞一下麦可思"
+即触发。
 
 第一次会让你登录学校 SSO 一次（Chrome 窗口会自动弹出），之后会话复用直到
 cookie 过期。
+
+### 其他 AI agent（Codex CLI / Cursor / Cline / Aider / Gemini CLI 等）
+
+仓库根有一份 [`AGENTS.md`](AGENTS.md)，是给非-Claude agent 看的指令书，内容
+跟 SKILL.md 基本一样但去掉了 Claude 专属的 frontmatter。
+
+**Codex CLI**：clone 到任意位置，在仓库目录里跑 `codex`，让它读
+`AGENTS.md`（Codex 默认会自动读取项目根的 AGENTS.md）。
+
+**Cursor / Cline**：clone 到任意位置，把仓库当工作区打开，Cursor 会读
+`AGENTS.md`（也兼容 `.cursorrules`，需要的话可以软链一下：
+`ln -s AGENTS.md .cursorrules`）。
+
+**Aider**：
+```bash
+aider --read AGENTS.md
+```
+然后让 aider 跑工具。
+
+**Gemini CLI**：把 AGENTS.md 软链或重命名为 `GEMINI.md`：
+```bash
+ln -s AGENTS.md GEMINI.md
+```
+Gemini CLI 默认读取项目根的 `GEMINI.md` 作为上下文。
+
+**DeepSeek / GLM / Qwen / 其他直调 API 的方案**：把 AGENTS.md 内容作为
+system prompt 注入。底下的 shell 工具调用一致。
+
+**任何能跑 shell 命令的 agent**：核心命令都是
+`/path/to/repo/.venv/bin/python /path/to/repo/eval.py {check,login,run}`，
+不依赖任何 agent 特性。
 
 ## 命令行直接用（不通过 Claude Code）
 
