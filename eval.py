@@ -9,7 +9,9 @@ mycospxk.com 教学评价自动化。
     --comments PATH          评语 JSON 文件（数组），不传则用内置评语
     --dry-run                填好但不提交
     --headed                 显示浏览器窗口（调试用）
-    --moderate               随机混入第二档评分（不全是非常满意）
+    --start-downgrade N      起始降档数（默认0=先全给最高档，触发"评价较高"
+                             弹窗再逐档往上加，直到无弹窗提交；阈值会跨表单复用）
+    --moderate               起始就降几档（等价 --start-downgrade 3）
     --max N                  最多处理 N 条
     --url URL                覆盖默认入口 URL
 
@@ -420,6 +422,30 @@ HANDLE_REASON_JS = r"""
 }
 """
 
+# "评价较高"对话框：点"取消"返回表单（用于自适应降档重试，不提交高分）
+CANCEL_REASON_JS = r"""
+() => {
+  const visible = el => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && getComputedStyle(el).display !== 'none';
+  };
+  const modalSel = '.ant-modal, .am-modal, .am-modal-wrap, .am-modal-content, [role="dialog"]';
+  const modals = [...document.querySelectorAll(modalSel)].filter(visible);
+  for (const m of modals) {
+    if (!/评价较高|填写原因|请说明/.test(m.textContent || '')) continue;
+    const cancel = [...m.querySelectorAll('button, a.am-modal-button, a[role="button"], [role="button"]')].find(
+      b => visible(b) && /^(取\s*消|关\s*闭|返\s*回)$/.test((b.textContent||'').trim())
+    );
+    if (cancel) { cancel.click(); return 'cancelled'; }
+    // 没有取消键就用 modal 自带 X
+    const x = m.querySelector('.ant-modal-close, .ant-modal-close-x, .am-modal-close, .am-modal-close-x');
+    if (x) { x.click(); return 'closed-x'; }
+    return 'no-cancel-btn';
+  }
+  return 'no-reason-modal';
+}
+"""
+
 # Toast 错误检测
 ERROR_TOAST_JS = r"""
 () => {
@@ -528,7 +554,7 @@ IS_FORM_PAGE_JS = r"""
 # 填写当前表单页（Ant Design）：单选选最高档 + 评语填到 textarea
 # 选项顺序是 非常差/差/一般/好/非常好，所以默认取每组最后一个（pickIdx = -1）
 FILL_FORM_JS = r"""
-({mainText, suggestionText, pickIdx, moderate}) => {
+({mainText, suggestionText, pickIdx, downgradeCount}) => {
   const rng = Math.random;
 
   const visible = (el) => {
@@ -563,12 +589,10 @@ FILL_FORM_JS = r"""
     groups = [...byParent.entries()].filter(([_, arr]) => arr.length >= 2).map(([p]) => p);
   }
 
-  // 反"满分作答"：随机选 3 个组改成次高档（idx-1）。
-  // moderate 时改成 40%（更分散）。
+  // 策略：尽量给最高档；只把 downgradeCount 个随机组降到次高档（idx-1）。
+  // 上层自适应：从 0 开始，触发"评价较高"弹窗就 +1 重填，直到无弹窗提交。
   const totalGroups = groups.length;
-  const nonMaxCount = moderate
-    ? Math.max(3, Math.round(totalGroups * 0.4))
-    : Math.min(3, totalGroups);
+  const nonMaxCount = Math.max(0, Math.min(downgradeCount | 0, totalGroups));
   const nonMaxSet = new Set();
   while (nonMaxSet.size < nonMaxCount && nonMaxSet.size < totalGroups) {
     nonMaxSet.add(Math.floor(rng() * totalGroups));
@@ -717,6 +741,18 @@ async def cmd_run(args: argparse.Namespace) -> int:
         success_dismiss_attempts = 0  # 连续 success 状态下尝试关闭对话框的次数
         home_blacklist: list[str] = []  # 已点过且无可评内容的问卷卡片指纹
         last_home_pick: str = ""  # 上次从首页点了哪个卡片
+        # 自适应降档：尽量给最高档，触发"评价较高"弹窗就把一道题降到次高，
+        # 逐步增加直到能无弹窗提交。learned_downgrade 跨表单复用（同模板阈值一致）。
+        if getattr(args, "start_downgrade", None) is not None:
+            start_downgrade = max(0, args.start_downgrade)
+        elif getattr(args, "moderate", False):
+            start_downgrade = 3
+        else:
+            start_downgrade = 0
+        learned_downgrade = start_downgrade  # 已知可无弹窗提交的降档数
+        downgrade_count = start_downgrade    # 当前表单本轮使用的降档数
+        total_groups = 0                     # 当前表单单选题组数（首次填写后得知）
+        reason_stuck = 0                     # 连续 reason-modal 次数（侦测"取消"失效）
         for it in range(200):
             if done + skipped >= max_n:
                 log(f"达到 max ({max_n})，停止", "ok")
@@ -733,7 +769,10 @@ async def cmd_run(args: argparse.Namespace) -> int:
                     done += 1
                     form_attempts = 0
                     success_dismiss_attempts = 0
-                    log(f"✅ 已提交第 {done} 条", "ok")
+                    # 这次的降档数能无弹窗提交，记下来给后续表单作起点（不含兜底封顶情形）
+                    if total_groups == 0 or downgrade_count < total_groups:
+                        learned_downgrade = downgrade_count
+                    log(f"✅ 已提交第 {done} 条（降档 {downgrade_count}）", "ok")
                     await shoot(page, f"success-{done}")
                 success_dismiss_attempts += 1
                 action = await page.evaluate(HANDLE_SUCCESS_JS)
@@ -751,11 +790,24 @@ async def cmd_run(args: argparse.Namespace) -> int:
                 idle_iters = 0
 
             elif state == "reason-modal":
-                # "评价较高，请填写原因" → 用主文本作为理由
-                action = await page.evaluate(HANDLE_REASON_JS, {"reason": main_text})
-                log(f"高评价原因弹窗: {action} (理由='{main_text[:20]}...')")
-                await page.wait_for_timeout(1500)
+                # "评价较高，请填写原因"：按用户策略——评分太高了，取消弹窗、把一道题
+                # 从最高降到次高（downgrade_count+1），返回表单重填重交，直到无弹窗。
                 idle_iters = 0
+                cap = total_groups if total_groups else 16
+                # happy path：form→reason-modal→cancel→form，所以 reason-modal 的 previous 总是 form。
+                # 若连续两次都是 reason-modal，说明"取消"没能回到表单（页面异常）→ 立即兜底。
+                reason_stuck = reason_stuck + 1 if previous == "reason-modal" else 0
+                if reason_stuck >= 2 or downgrade_count >= cap:
+                    # 取消无效 或 已降到极限仍弹窗：兜底，填理由确认提交（避免死循环/耗尽迭代）
+                    action = await page.evaluate(HANDLE_REASON_JS, {"reason": main_text})
+                    log(f"取消无效或已降至最低，兜底确认提交: {action} (理由='{main_text[:16]}...')", "warn")
+                    await page.wait_for_timeout(1500)
+                else:
+                    downgrade_count += 1
+                    form_attempts = 0  # 自适应重试不计入"卡死"计数
+                    action = await page.evaluate(CANCEL_REASON_JS)
+                    log(f"评分偏高触发弹窗，降一档→{downgrade_count} 重试（取消: {action}）")
+                    await page.wait_for_timeout(1500)
 
             elif state == "plain-modal":
                 clicked = await page.evaluate(CLICK_CONFIRM_JS)
@@ -765,6 +817,9 @@ async def cmd_run(args: argparse.Namespace) -> int:
 
             elif state == "form":
                 idle_iters = 0
+                # 新表单（不是降档重试回来的）从已学到的降档数起步；尽量给最高档
+                if previous != "reason-modal":
+                    downgrade_count = learned_downgrade
                 if form_attempts >= 3:
                     log("同一表单尝试超过 3 次，跳过", "err")
                     skipped += 1
@@ -784,11 +839,14 @@ async def cmd_run(args: argparse.Namespace) -> int:
                             "mainText": main_text,
                             "suggestionText": suggestion_text,
                             "pickIdx": -1,
-                            "moderate": bool(args.moderate),
+                            "downgradeCount": downgrade_count,
                         },
                     )
+                    if fill_result["radios"]:
+                        total_groups = fill_result["radios"]
                     log(
-                        f"填写：单选 {fill_result['radios']} 组，文本 {fill_result['textareas']} 个"
+                        f"填写：单选 {fill_result['radios']} 组（降档 {downgrade_count}），"
+                        f"文本 {fill_result['textareas']} 个"
                     )
                     if fill_result["radios"] == 0 and fill_result["textareas"] == 0:
                         log("表单未识别出可填项", "err")
@@ -842,7 +900,9 @@ async def cmd_run(args: argparse.Namespace) -> int:
                 # 这门课的 done 漏算了，补上
                 if previous == "form":
                     done += 1
-                    log(f"✅ 已提交第 {done} 条（合并入问卷完成页）", "ok")
+                    if total_groups == 0 or downgrade_count < total_groups:
+                        learned_downgrade = downgrade_count
+                    log(f"✅ 已提交第 {done} 条（合并入问卷完成页，降档 {downgrade_count}）", "ok")
                 log("当前问卷全部完成，返回首页", "ok")
                 await shoot(page, f"survey-complete-{done}")
                 await go_back(page)
@@ -984,7 +1044,13 @@ def main() -> int:
     p_run.add_argument("--comments", help="[兼容旧版] 评语 JSON 数组文件，会随机选一条作为 --text")
     p_run.add_argument("--dry-run", action="store_true", help="填好但不提交")
     p_run.add_argument("--headed", action="store_true", help="显示浏览器（调试）")
-    p_run.add_argument("--moderate", action="store_true", help="混入第二档评分")
+    p_run.add_argument("--moderate", action="store_true", help="起始就降几档（等价 --start-downgrade 3）")
+    p_run.add_argument(
+        "--start-downgrade",
+        type=int,
+        default=None,
+        help="起始降档数（默认0=先全给最高档，触发'评价较高'弹窗再逐档往上加，直到无弹窗提交）",
+    )
     p_run.add_argument("--max", type=int, default=99, help="最多处理多少条")
 
     args = parser.parse_args()
