@@ -82,10 +82,16 @@ $SKILL_DIR/.venv/bin/python $SKILL_DIR/eval.py login
 $SKILL_DIR/.venv/bin/python $SKILL_DIR/eval.py run --text "<上一步想好的短句>"
 ```
 
+**评分策略（默认行为，用户偏好）**：脚本默认"尽量给最高档；只有触发'评价较高'
+弹窗时，才把一道题从最高降到次高，逐档增加直到能无弹窗提交"——即用最少的降档换
+"无弹窗 + 尽量高分"。找到的阈值会跨表单复用（同一问卷模板阈值一致），所以只有第一份
+表单会多几次降档重试，后续表单直接从已学到的档位起步。**默认不要再加 `--moderate`**。
+
 如果用户带参数：
 - `--review` / `--dry-run` → 加 `--dry-run`（填好不提交）
-- `--moderate` → 加 `--moderate`（更分散的混档）
 - `--headed` → 加 `--headed`（显示浏览器，调试）
+- 用户想"起步就低一点、少几次重试" → 加 `--start-downgrade N`（N 为起始降档数）；
+  `--moderate` 等价于 `--start-downgrade 3`
 
 正常情况脚本 headless 跑完，最后一行 stdout 是 JSON：`{"done": N, "skipped": M}`。
 
@@ -120,13 +126,14 @@ mycos 平台同一个学生可能同时收到几种问卷：
 - **过程评价 / 期中评价**（type=5, typeCode=Middle）：home → 问卷卡片 → 课程列表（每门课一卡片，授课教师 X/Y）→ 各门课的 form → 提交后弹"提交成功" modal + "下一门课程"按钮 → ... → 最后一门提交后整页跳"评价完成"
 - **期末评价**（type=1, typeCode=Final）：结构同上
 - **学生评管**（type=7）：home → 问卷卡片 → **直接 form**（没有课程列表中间层）→ 提交后整页"评价完成"
+- **多教师课程**：一门课挂多位老师（如"汽车设计 / 耿国庆,张兴龙"）时，课程页顶部有教师子 Tab，需逐个老师评。某老师评完后其 Tab 出现对勾图标、表单按钮变"已提交"。
 
-skill 的状态机 `home / survey-list / form / success / survey-complete / reason-modal / plain-modal` 同时兜住这几种结构。
+skill 的状态机 `home / survey-list / form / teacher-tabs / success / survey-complete / reason-modal / plain-modal` 同时兜住这几种结构。其中 `teacher-tabs` 在当前老师已评完、但子 Tab 里还有未评老师时触发，自动切到该老师后页面即变回 `form`。
 
 ## 已知反作弊行为
 
-1. **不允许全选满分**：所有单选都选最高档时，提交会被一句 toast `不允许提交满分评价，请认真作答！` 拒绝。脚本对每份表单**强制随机 3 道选次高档**（"好/同意/满意"），其余仍是最高档。
-2. **评价较高需写原因**：如果整体打分较高，提交时会弹"您对该教师的评价较高，请填写原因"模态框。脚本检测到此 modal 后用 `--text` 那句作为原因填进去再点确定。
+1. **不允许全选满分 / 评价较高需写原因**：整体打分过高时，提交会弹"您对该教师的评价较高，请填写原因"模态框（antd-mobile 的 `am-modal`，确认/取消键是 `<a class="am-modal-button">` 不是 `<button>`）。脚本默认采用**自适应降档**应对：先全给最高档，弹窗就取消、把一道题降到次高、返回重交，逐档加直到无弹窗（详见 Step 4 评分策略）。降到题数上限仍弹窗、或"取消"失效时，兜底用 `--text` 那句作原因确认提交。
+2. **首页不自动隐藏已完成的问卷卡片**：完成一份问卷后，首页那张卡片仍可见，文字也不带"已完成"。脚本用 run-local blacklist：进 survey-list 发现没"进行中"课程 → 把 last_home_pick 加入黑名单，下次首页选卡时跳过。
 3. **首页不自动隐藏已完成的问卷卡片**：完成一份问卷后，首页那张卡片仍可见，文字也不带"已完成"。脚本用 run-local blacklist：进 survey-list 发现没"进行中"课程 → 把 last_home_pick 加入黑名单，下次首页选卡时跳过。
 
 ## 错误处理 Cheatsheet
