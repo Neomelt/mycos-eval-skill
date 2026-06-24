@@ -313,6 +313,19 @@ PAGE_STATE_JS = r"""
       [...document.querySelectorAll('button')].some(b => visible(b) && /^提\s*交$/.test(b.textContent.trim()))) {
     return 'form';
   }
+  // 1b) 多教师课程：当前老师已评完（按钮"已提交"，非 form），但子 Tab 里还有未评老师
+  //     (未评老师的 span 没有 complete_icon 对勾图标)。切到该老师即变 form。
+  {
+    const subTabs = [...document.querySelectorAll('[class*="TaskMainContent_subTab"]')].filter(visible);
+    for (const tab of subTabs) {
+      const spans = [...tab.querySelectorAll(':scope > span')].filter(visible);
+      const pending = spans.filter(s => {
+        const t = text(s);
+        return t.length >= 2 && /[一-龥]/.test(t) && !s.querySelector('img[class*="complete_icon"]');
+      });
+      if (pending.length > 0) return 'teacher-tabs';
+    }
+  }
   // 2) 课程列表页
   if ([...document.querySelectorAll('*')].some(e => {
     const t = text(e);
@@ -477,6 +490,32 @@ CLICK_SURVEY_NEXT_JS = r"""
   target.scrollIntoView({block: 'center'});
   target.click();
   return {ok: true, text: txt};
+}
+"""
+
+# 多教师课程：点击第一个未评老师的 Tab（span 内无 complete_icon 对勾图标）
+CLICK_PENDING_TEACHER_JS = r"""
+() => {
+  const visible = el => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && getComputedStyle(el).display !== 'none';
+  };
+  const text = el => (el.textContent || '').trim().replace(/\s+/g, '');
+  const subTabs = [...document.querySelectorAll('[class*="TaskMainContent_subTab"]')].filter(visible);
+  for (const tab of subTabs) {
+    const spans = [...tab.querySelectorAll(':scope > span')].filter(visible);
+    const pending = spans.find(s => {
+      const t = text(s);
+      return t.length >= 2 && /[一-龥]/.test(t) && !s.querySelector('img[class*="complete_icon"]');
+    });
+    if (pending) {
+      const name = text(pending);
+      pending.scrollIntoView({block: 'center'});
+      pending.click();
+      return {ok: true, name};
+    }
+  }
+  return {ok: false, reason: 'no pending teacher tab'};
 }
 """
 
@@ -808,6 +847,19 @@ async def cmd_run(args: argparse.Namespace) -> int:
                 await shoot(page, f"survey-complete-{done}")
                 await go_back(page)
                 await page.wait_for_timeout(2500)
+
+            elif state == "teacher-tabs":
+                # 多教师课程：当前老师已评完，切到下一个未评老师（切完即变 form）
+                idle_iters = 0
+                form_attempts = 0
+                clicked = await page.evaluate(CLICK_PENDING_TEACHER_JS)
+                if clicked.get("ok"):
+                    log(f"多教师课程，切到未评老师: {clicked.get('name', '')}")
+                    await page.wait_for_timeout(2200)
+                else:
+                    log(f"该课程老师已全部评完 ({clicked.get('reason', '')})，返回", "ok")
+                    await go_back(page)
+                    await page.wait_for_timeout(1500)
 
             elif state == "survey-list":
                 idle_iters = 0
