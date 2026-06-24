@@ -389,13 +389,16 @@ HANDLE_REASON_JS = r"""
     el.dispatchEvent(new Event('input', {bubbles:true}));
     el.dispatchEvent(new Event('change', {bubbles:true}));
   };
-  const modals = [...document.querySelectorAll('.ant-modal, [role="dialog"]')].filter(visible);
+  // mycos 同时混用 ant-modal（PC）和 am-modal（antd-mobile）。am 版确认键是 <a class="am-modal-button">确定</a>
+  const modalSel = '.ant-modal, .am-modal, .am-modal-wrap, .am-modal-content, [role="dialog"]';
+  const modals = [...document.querySelectorAll(modalSel)].filter(visible);
   for (const m of modals) {
     if (!/评价较高|填写原因|请说明/.test(m.textContent || '')) continue;
     const ta = m.querySelector('textarea');
     if (ta) setNativeValue(ta, reason);
-    const ok = [...m.querySelectorAll('button')].find(
-      b => visible(b) && /^(确\s*定|确\s*认|提\s*交)$/.test((b.textContent||'').trim())
+    // 确认键可能是 <button> 也可能是 <a class="am-modal-button"> / [role=button]
+    const ok = [...m.querySelectorAll('button, a.am-modal-button, a[role="button"], [role="button"]')].find(
+      b => visible(b) && /^(确\s*定|确\s*认|提\s*交|确认提交)$/.test((b.textContent||'').trim())
     );
     if (ok) { ok.click(); return 'filled-confirmed'; }
     return 'filled-no-confirm-btn';
@@ -605,8 +608,8 @@ CLICK_CONFIRM_JS = r"""
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0 && getComputedStyle(el).display !== 'none';
   };
-  // Ant Modal/Popconfirm 确认按钮
-  const btns = [...document.querySelectorAll('.ant-modal button, .ant-popover button, .ant-popconfirm button, button')]
+  // Ant Modal/Popconfirm 确认按钮；am-modal 的按钮是 <a class="am-modal-button">
+  const btns = [...document.querySelectorAll('.ant-modal button, .ant-popover button, .ant-popconfirm button, button, .am-modal-button, a[role="button"], [role="button"]')]
     .filter(visible)
     .filter(b => /^(确\s*定|确\s*认|是|继\s*续|好\s*的|OK)$/i.test((b.textContent || '').trim()));
   if (btns.length === 0) return false;
